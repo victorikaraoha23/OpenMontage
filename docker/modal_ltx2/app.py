@@ -1,11 +1,4 @@
-"""OpenMontage LTX-2.3 inference API on Modal.
-
-Deploy from the repository root with:
-    modal deploy docker/modal_ltx2/app.py
-
-The endpoint is private-by-token. Model weights are cached in a Modal Volume;
-HF_TOKEN must have access to the LTX-2.3 and Gemma 3 repositories.
-"""
+"""OpenMontage LTX-2.3 inference API on Modal."""
 from __future__ import annotations
 
 import base64
@@ -42,6 +35,7 @@ image = (
     )
 )
 
+
 @app.function(
     image=download_image,
     cpu=8,
@@ -51,7 +45,7 @@ image = (
     secrets=[modal.Secret.from_name("openmontage-ltx2")],
 )
 def prepare_models() -> dict:
-    """Download gated model files on CPU so GPU time is reserved for inference."""
+    """Download model weights on CPU so GPU time is reserved for inference."""
     import os
     from huggingface_hub import hf_hub_download, snapshot_download
 
@@ -91,13 +85,6 @@ def prepare_models() -> dict:
     secrets=[modal.Secret.from_name("openmontage-ltx2")],
 )
 @modal.fastapi_endpoint(method="POST")
-
-    timeout=1800,
-    scaledown_window=300,
-    volumes={"/models": model_volume},
-    secrets=[modal.Secret.from_name("openmontage-ltx2")],
-)
-@modal.fastapi_endpoint(method="POST")
 def generate(payload: dict, authorization: str = Header(default="")) -> dict:
     """Generate an MP4 and return it as base64 JSON for the OpenMontage client."""
     expected = os.environ.get("OPENMONTAGE_API_TOKEN", "")
@@ -109,10 +96,6 @@ def generate(payload: dict, authorization: str = Header(default="")) -> dict:
         params = validate_payload(payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token:
-        raise HTTPException(status_code=503, detail="HF_TOKEN is not configured in the Modal secret.")
 
     try:
         models = prepare_models.remote()
@@ -155,8 +138,12 @@ def generate(payload: dict, authorization: str = Header(default="")) -> dict:
 
         try:
             result = subprocess.run(
-                command, cwd=LTX_REPO, capture_output=True, text=True,
-                timeout=1700, check=False,
+                command,
+                cwd=LTX_REPO,
+                capture_output=True,
+                text=True,
+                timeout=1700,
+                check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise HTTPException(status_code=504, detail="LTX generation exceeded the execution timeout.") from exc
