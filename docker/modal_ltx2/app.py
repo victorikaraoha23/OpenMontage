@@ -29,11 +29,12 @@ LTX_REPO_COMMIT = "d151147788a9284cca791edc6ce898007e727fe6"
 
 app = modal.App(APP_NAME)
 model_volume = modal.Volume.from_name("openmontage-ltx2-models", create_if_missing=True)
+download_image = modal.Image.debian_slim(python_version="3.11").pip_install("huggingface_hub")
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git", "ffmpeg")
-    .pip_install("uv", "huggingface_hub", "fastapi[standard]", "requests", "pillow")
+    .pip_install("uv", "fastapi[standard]", "requests", "pillow")
     .run_commands(
         f"git clone https://github.com/Lightricks/LTX-2.git {LTX_REPO}",
         f"cd {LTX_REPO} && git checkout {LTX_REPO_COMMIT}",
@@ -42,8 +43,55 @@ image = (
 )
 
 @app.function(
+    image=download_image,
+    cpu=8,
+    memory=32768,
+    timeout=3600,
+    volumes={"/models": model_volume},
+    secrets=[modal.Secret.from_name("openmontage-ltx2")],
+)
+def prepare_models() -> dict:
+    """Download gated model files on CPU so GPU time is reserved for inference."""
+    import os
+    from huggingface_hub import hf_hub_download, snapshot_download
+
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        raise RuntimeError("HF_TOKEN is not configured in the Modal secret.")
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    checkpoint = hf_hub_download(
+        repo_id="Lightricks/LTX-2.3",
+        filename="ltx-2.3-22b-distilled-1.1.safetensors",
+        token=token,
+        local_dir=str(CHECKPOINT_DIR),
+    )
+    upscaler = hf_hub_download(
+        repo_id="Lightricks/LTX-2.3",
+        filename="ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+        token=token,
+        local_dir=str(CHECKPOINT_DIR),
+    )
+    if not (GEMMA_DIR / "config.json").exists():
+        snapshot_download(
+            repo_id="google/gemma-3-12b-it",
+            token=token,
+            local_dir=str(GEMMA_DIR),
+        )
+    model_volume.commit()
+    return {"checkpoint": checkpoint, "upscaler": upscaler}
+
+
+@app.function(
     image=image,
     gpu="A100-80GB",
+    timeout=1800,
+    scaledown_window=300,
+    max_containers=1,
+    volumes={"/models": model_volume},
+    secrets=[modal.Secret.from_name("openmontage-ltx2")],
+)
+@modal.fastapi_endpoint(method="POST")
+
     timeout=1800,
     scaledown_window=300,
     volumes={"/models": model_volume},
@@ -67,28 +115,10 @@ def generate(payload: dict, authorization: str = Header(default="")) -> dict:
         raise HTTPException(status_code=503, detail="HF_TOKEN is not configured in the Modal secret.")
 
     try:
-        from huggingface_hub import hf_hub_download, snapshot_download
-
-        CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-        checkpoint = hf_hub_download(
-            repo_id="Lightricks/LTX-2.3",
-            filename="ltx-2.3-22b-distilled-1.1.safetensors",
-            token=hf_token,
-            local_dir=str(CHECKPOINT_DIR),
-        )
-        upscaler = hf_hub_download(
-            repo_id="Lightricks/LTX-2.3",
-            filename="ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-            token=hf_token,
-            local_dir=str(CHECKPOINT_DIR),
-        )
-        if not (GEMMA_DIR / "config.json").exists():
-            snapshot_download(
-                repo_id="google/gemma-3-12b-it",
-                token=hf_token,
-                local_dir=str(GEMMA_DIR),
-            )
-        model_volume.commit()
+        models = prepare_models.remote()
+        model_volume.reload()
+        checkpoint = models["checkpoint"]
+        upscaler = models["upscaler"]
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Model preparation failed: {type(exc).__name__}: {exc}") from exc
 
@@ -96,7 +126,7 @@ def generate(payload: dict, authorization: str = Header(default="")) -> dict:
         temp = Path(temp_dir)
         output_path = temp / "generated.mp4"
         command = [
-            "uv", "run", "--project", LTX_REPO, "--frozen", "python", "-m",
+            "uv", "run", "--project", LTX_REPO, "--no-sync", "python", "-m",
             "ltx_pipelines.distilled",
             "--distilled-checkpoint-path", checkpoint,
             "--gemma-root", str(GEMMA_DIR),
