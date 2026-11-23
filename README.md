@@ -769,3 +769,14 @@ make test
 If this project looks useful to you, a ⭐ would really mean a lot — it helps others discover it too.
 
 If you'd like to go further, [sponsor the project](https://github.com/sponsors/calesthio) — OpenMontage is built nights and weekends, and your support makes that sustainable.
+
+
+---
+
+## Optional: LTX-2.3 GPU generation on Modal
+
+OpenMontage includes an optional authenticated Modal deployment for LTX-2.3.
+It is not required for local engine setup. Read
+[`docker/modal_ltx2/README.md`](docker/modal_ltx2/README.md) for Hugging Face
+license/access prerequisites, Modal secret creation, deployment, environment
+configuration, cost controls, and the smoke-test procedure.

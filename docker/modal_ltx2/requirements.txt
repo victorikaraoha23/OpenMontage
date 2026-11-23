@@ -1,0 +1,2 @@
+# Local CLI used to deploy the OpenMontage LTX-2.3 Modal app.
+modal==1.6.4
