@@ -66,12 +66,11 @@ class LTXVideoModal(BaseTool):
             "operation": {"type": "string", "enum": ["text_to_video", "image_to_video"], "default": "text_to_video"},
             "reference_image_url": {"type": "string"},
             "reference_image_path": {"type": "string"},
-            "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"], "default": "16:9"},
+            "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"], "default": "9:16"},
             "duration_hint": {"type": "string"},
             "width": {"type": "integer"},
             "height": {"type": "integer"},
             "num_frames": {"type": "integer"},
-            "num_inference_steps": {"type": "integer"},
             "seed": {"type": "integer"},
             "output_path": {"type": "string"},
         },
@@ -84,7 +83,7 @@ class LTXVideoModal(BaseTool):
     user_visible_verification = ["Watch generated clip for motion quality and prompt adherence"]
 
     def get_status(self) -> ToolStatus:
-        return ToolStatus.AVAILABLE if os.environ.get("MODAL_LTX2_ENDPOINT_URL") else ToolStatus.UNAVAILABLE
+        return ToolStatus.AVAILABLE if os.environ.get("MODAL_LTX2_ENDPOINT_URL") and os.environ.get("MODAL_LTX2_API_TOKEN") else ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, object]) -> float:
         return 0.25

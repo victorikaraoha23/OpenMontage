@@ -666,24 +666,28 @@ def generate_heygen_video(inputs: dict[str, Any]) -> ToolResult:
 
 
 def generate_ltx_modal_video(inputs: dict[str, Any]) -> ToolResult:
+    """Call the authenticated OpenMontage LTX-2.3 Modal endpoint."""
     import base64
 
     import requests
 
     endpoint_url = os.environ.get("MODAL_LTX2_ENDPOINT_URL")
+    api_token = os.environ.get("MODAL_LTX2_API_TOKEN")
     if not endpoint_url:
         return ToolResult(success=False, error="MODAL_LTX2_ENDPOINT_URL not set.")
+    if not api_token:
+        return ToolResult(success=False, error="MODAL_LTX2_API_TOKEN not set.")
 
     prompt = inputs["prompt"]
     operation = inputs.get("operation", "text_to_video")
-    aspect = inputs.get("aspect_ratio", "16:9")
+    aspect = inputs.get("aspect_ratio", "9:16")
     width = inputs.get("width")
     height = inputs.get("height")
     if width is None or height is None:
-        if aspect == "16:9":
-            width, height = 1024, 576
-        elif aspect == "9:16":
+        if aspect == "9:16":
             width, height = 576, 1024
+        elif aspect == "16:9":
+            width, height = 1024, 576
         else:
             width, height = 512, 512
 
@@ -697,8 +701,6 @@ def generate_ltx_modal_video(inputs: dict[str, Any]) -> ToolResult:
         "height": height,
         "num_frames": num_frames,
         "fps": 24,
-        "steps": inputs.get("num_inference_steps", 30),
-        "negative_prompt": "worst quality, low quality, blurry, distorted, watermark, text, logo",
     }
     if inputs.get("seed") is not None:
         payload["seed"] = inputs["seed"]
@@ -707,7 +709,7 @@ def generate_ltx_modal_video(inputs: dict[str, Any]) -> ToolResult:
         ref_path = inputs.get("reference_image_path")
         ref_url = inputs.get("reference_image_url")
         if ref_path:
-            payload["input_image"] = base64.b64encode(Path(ref_path).read_bytes()).decode()
+            payload["input_image"] = base64.b64encode(Path(ref_path).read_bytes()).decode("ascii")
         elif ref_url:
             payload["input_image_url"] = ref_url
         else:
@@ -716,28 +718,36 @@ def generate_ltx_modal_video(inputs: dict[str, Any]) -> ToolResult:
                 error="image_to_video requires reference_image_url or reference_image_path",
             )
 
-    response = requests.post(endpoint_url, json=payload, timeout=300)
-    response.raise_for_status()
+    try:
+        response = requests.post(
+            endpoint_url,
+            json=payload,
+            headers={"Authorization": f"Bearer {api_token}"},
+            timeout=1800,
+        )
+        response.raise_for_status()
+        response_payload = response.json()
+        encoded_video = response_payload.get("video_base64")
+        if not encoded_video:
+            return ToolResult(
+                success=False,
+                error=f"Modal endpoint returned no video_base64 field: {response_payload}",
+            )
+        video_bytes = base64.b64decode(encoded_video, validate=True)
+    except requests.RequestException as exc:
+        return ToolResult(success=False, error=f"Modal LTX request failed: {exc}")
+    except (ValueError, TypeError) as exc:
+        return ToolResult(success=False, error=f"Modal LTX response was invalid: {exc}")
+
     output_path = Path(inputs.get("output_path", "ltx_video_modal.mp4"))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    content_type = response.headers.get("content-type", "")
-    if "video" in content_type or "octet-stream" in content_type:
-        output_path.write_bytes(response.content)
-    else:
-        response_payload = response.json()
-        video_url = response_payload.get("video_url") or response_payload.get("url")
-        if not video_url:
-            return ToolResult(success=False, error=f"No video data in response: {response_payload}")
-        download = requests.get(video_url, timeout=120)
-        download.raise_for_status()
-        output_path.write_bytes(download.content)
+    output_path.write_bytes(video_bytes)
 
     return ToolResult(
         success=True,
         data={
             "provider": "ltx-modal",
-            "provider_name": "LTX-2 (Modal)",
+            "provider_name": "LTX-2.3 (Modal)",
             "mode": "modal",
             "prompt": prompt,
             "width": width,
@@ -748,12 +758,12 @@ def generate_ltx_modal_video(inputs: dict[str, Any]) -> ToolResult:
             "operation": operation,
             "output": str(output_path),
             "format": "mp4",
+            "model": response_payload.get("model", "LTX-2.3-22B-Distilled-1.1"),
         },
         artifacts=[str(output_path)],
         seed=inputs.get("seed"),
-        model="ltx-2",
+        model="ltx-2.3",
     )
-
 
 def probe_output(path: Path) -> dict[str, Any]:
     info: dict[str, Any] = {"file_size_bytes": path.stat().st_size}
@@ -789,24 +799,7 @@ def probe_output(path: Path) -> dict[str, Any]:
                     info["video_width"] = int(stream.get("width", 0))
                     info["video_height"] = int(stream.get("height", 0))
                     info["video_codec"] = stream.get("codec_name", "")
-                    fps = _parse_frame_rate(
-                        stream.get("avg_frame_rate")
-                    ) or _parse_frame_rate(stream.get("r_frame_rate"))
-                    if fps:
-                        info["video_fps"] = fps
-                    if str(stream.get("nb_frames", "")).isdigit():
-                        info["video_num_frames"] = int(stream["nb_frames"])
                     break
     except Exception:
         pass
     return info
-
-
-def _parse_frame_rate(value: Any) -> float | None:
-    """Parse an ffprobe rate such as ``24/1`` or ``24000/1001``."""
-    try:
-        num, _, den = str(value).partition("/")
-        rate = float(num) / float(den or 1)
-    except (TypeError, ValueError, ZeroDivisionError):
-        return None
-    return round(rate, 3) if rate > 0 else None
