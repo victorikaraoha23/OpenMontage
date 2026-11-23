@@ -31,7 +31,7 @@ image = (
     .run_commands(
         f"git clone https://github.com/Lightricks/LTX-2.git {LTX_REPO}",
         f"cd {LTX_REPO} && git checkout {LTX_REPO_COMMIT}",
-        f"cd {LTX_REPO} && uv sync --frozen",
+        f"cd {LTX_REPO} && uv sync --package ltx-pipelines",
     )
 )
 
