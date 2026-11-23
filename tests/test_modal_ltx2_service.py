@@ -1,7 +1,8 @@
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "docker" / "modal_ltx2"))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "docker" / "modal_ltx2"))
 from service import validate_payload
 
 
@@ -42,3 +43,8 @@ def test_rejects_bad_base64():
         assert "base64" in str(exc)
     else:
         raise AssertionError("Invalid base64 was accepted")
+
+
+def test_modal_app_syntax():
+    source = (REPO_ROOT / "docker" / "modal_ltx2" / "app.py").read_text(encoding="utf-8")
+    compile(source, "docker/modal_ltx2/app.py", "exec")
