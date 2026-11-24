@@ -25,6 +25,7 @@ from tools.graphics.image_selector import ImageSelector
 from tools.tool_registry import ToolRegistry
 from tools.video.video_selector import VideoSelector
 from tools.video.comfyui_video import ComfyUIVideo
+from tools.video._shared import probe_output
 
 TOOLS = [ComfyUIImage, ComfyUIVideo, ComfyUIMusic]
 WORKFLOW_DIR = Path(__file__).resolve().parent.parent.parent / "tools" / "_comfyui" / "workflows"
@@ -1678,3 +1679,127 @@ class TestComfyUITiming:
         assert timing["comfy_prompt_exec_s"] == 120.0
         assert timing["client_queue_and_poll_s"] == 30.0
         assert timing["wall_s"] >= timing["client_overhead_s"] >= 0
+
+
+
+class TestFFprobeOutputMetadata:
+    """Focused tests for rational FPS and frame-count extraction."""
+
+    @pytest.mark.parametrize(
+        ("avg_frame_rate", "r_frame_rate", "expected_fps"),
+        [
+            ("24/1", "30/1", 24.0),
+            ("30000/1001", "30/1", 30000 / 1001),
+            ("0/0", "25/1", 25.0),
+            ("N/A", "24000/1001", 24000 / 1001),
+            ("N/A", "0/0", None),
+            (None, None, None),
+        ],
+    )
+    def test_probe_parses_average_and_fallback_frame_rates(
+        self, tmp_path, monkeypatch, avg_frame_rate, r_frame_rate, expected_fps
+    ):
+        media = tmp_path / "clip.mp4"
+        media.write_bytes(b"test")
+        stream = {
+            "codec_type": "video",
+            "width": "64",
+            "height": "112",
+            "avg_frame_rate": avg_frame_rate,
+            "r_frame_rate": r_frame_rate,
+            "nb_frames": "13",
+        }
+        payload = {
+            "format": {"duration": "0.541667"},
+            "streams": [stream],
+        }
+        monkeypatch.setattr(
+            "tools.video._shared.shutil.which", lambda _: "/usr/bin/ffprobe"
+        )
+        monkeypatch.setattr(
+            "tools.video._shared.subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, json.dumps(payload), ""
+            ),
+        )
+
+        result = probe_output(media)
+
+        if expected_fps is None:
+            assert "video_fps" not in result
+        else:
+            assert result["video_fps"] == pytest.approx(expected_fps)
+        assert result["video_num_frames"] == 13
+        assert result["video_width"] == 64
+        assert result["video_height"] == 112
+
+    def test_probe_prefers_read_frame_count_when_available(self, tmp_path, monkeypatch):
+        media = tmp_path / "clip.mp4"
+        media.write_bytes(b"test")
+        payload = {
+            "format": {"duration": "0.5"},
+            "streams": [{
+                "codec_type": "video",
+                "width": 64,
+                "height": 112,
+                "avg_frame_rate": "24/1",
+                "r_frame_rate": "24/1",
+                "nb_read_frames": "12",
+                "nb_frames": "13",
+            }],
+        }
+        monkeypatch.setattr("tools.video._shared.shutil.which", lambda _: "/usr/bin/ffprobe")
+        monkeypatch.setattr(
+            "tools.video._shared.subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, json.dumps(payload), ""
+            ),
+        )
+
+        result = probe_output(media)
+
+        assert result["video_num_frames"] == 12
+        assert result["video_fps"] == 24.0
+
+    def test_probe_omits_invalid_frame_count_and_handles_invalid_duration(
+        self, tmp_path, monkeypatch
+    ):
+        media = tmp_path / "clip.mp4"
+        media.write_bytes(b"test")
+        payload = {
+            "format": {"duration": "N/A"},
+            "streams": [{
+                "codec_type": "video",
+                "width": "64",
+                "height": "112",
+                "avg_frame_rate": "N/A",
+                "r_frame_rate": "0/0",
+                "nb_read_frames": "N/A",
+                "nb_frames": "0",
+            }],
+        }
+        monkeypatch.setattr("tools.video._shared.shutil.which", lambda _: "/usr/bin/ffprobe")
+        monkeypatch.setattr(
+            "tools.video._shared.subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, json.dumps(payload), ""
+            ),
+        )
+
+        result = probe_output(media)
+
+        assert "video_fps" not in result
+        assert "video_num_frames" not in result
+        assert "duration_seconds" not in result
+
+    def test_probe_returns_basic_file_info_when_ffprobe_is_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        media = tmp_path / "clip.mp4"
+        media.write_bytes(b"test")
+        monkeypatch.setattr("tools.video._shared.shutil.which", lambda _: None)
+
+        result = probe_output(media)
+
+        assert result["file_size_bytes"] == 4
+        assert "video_fps" not in result
