@@ -765,7 +765,40 @@ def generate_ltx_modal_video(inputs: dict[str, Any]) -> ToolResult:
         model="ltx-2.3",
     )
 
+def _parse_ffprobe_frame_rate(value: Any) -> float | None:
+    """Parse an ffprobe rational frame rate, rejecting absent/invalid values."""
+    from fractions import Fraction
+    import math
+
+    if value is None:
+        return None
+    try:
+        rate = float(Fraction(str(value)))
+    except (ValueError, ZeroDivisionError, TypeError, OverflowError):
+        return None
+    return rate if math.isfinite(rate) and rate > 0 else None
+
+
+def _parse_ffprobe_frame_count(*values: Any) -> int | None:
+    """Return the first valid positive frame count supplied by ffprobe."""
+    for value in values:
+        try:
+            count = int(value)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        if count > 0:
+            return count
+    return None
+
+
 def probe_output(path: Path) -> dict[str, Any]:
+    """Read measured media metadata from ffprobe when it is available.
+
+    Frame rates are reported as rational strings by ffprobe. Prefer the
+    average playback rate and fall back to the stream's nominal rate. Frame
+    counts are taken from ffprobe's existing count fields; we deliberately do
+    not enable -count_frames, which can require a full decode pass.
+    """
     info: dict[str, Any] = {"file_size_bytes": path.stat().st_size}
     if not shutil.which("ffprobe"):
         return info
@@ -789,17 +822,47 @@ def probe_output(path: Path) -> dict[str, Any]:
             timeout=10,
             check=False,
         )
-        if proc.returncode == 0:
-            probe = json.loads(proc.stdout)
-            fmt = probe.get("format", {})
-            info["duration_seconds"] = float(fmt.get("duration", 0))
-            info["file_size_mb"] = round(path.stat().st_size / (1024 * 1024), 2)
-            for stream in probe.get("streams", []):
-                if stream.get("codec_type") == "video":
-                    info["video_width"] = int(stream.get("width", 0))
-                    info["video_height"] = int(stream.get("height", 0))
-                    info["video_codec"] = stream.get("codec_name", "")
-                    break
+        if proc.returncode != 0:
+            return info
+
+        probe = json.loads(proc.stdout)
+        fmt = probe.get("format", {})
+        try:
+            duration = float(fmt.get("duration", 0))
+            if duration > 0:
+                info["duration_seconds"] = duration
+        except (ValueError, TypeError, OverflowError):
+            pass
+        info["file_size_mb"] = round(path.stat().st_size / (1024 * 1024), 2)
+
+        for stream in probe.get("streams", []):
+            if stream.get("codec_type") != "video":
+                continue
+            try:
+                width = int(stream.get("width", 0))
+                height = int(stream.get("height", 0))
+                if width > 0:
+                    info["video_width"] = width
+                if height > 0:
+                    info["video_height"] = height
+            except (ValueError, TypeError, OverflowError):
+                pass
+
+            info["video_codec"] = stream.get("codec_name", "")
+            fps = _parse_ffprobe_frame_rate(stream.get("avg_frame_rate"))
+            if fps is None:
+                fps = _parse_ffprobe_frame_rate(stream.get("r_frame_rate"))
+            if fps is not None:
+                info["video_fps"] = fps
+
+            frame_count = _parse_ffprobe_frame_count(
+                stream.get("nb_read_frames"),
+                stream.get("nb_frames"),
+            )
+            if frame_count is not None:
+                info["video_num_frames"] = frame_count
+            break
     except Exception:
+        # Probing is best-effort; callers retain their explicit fallback path.
         pass
     return info
