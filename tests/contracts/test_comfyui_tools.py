@@ -1713,7 +1713,9 @@ class TestFFprobeOutputMetadata:
             "format": {"duration": "0.541667"},
             "streams": [stream],
         }
-        monkeypatch.setattr("tools.video._shared.shutil.which", lambda _: "/usr/bin/ffprobe")
+        monkeypatch.setattr(
+            "tools.video._shared.shutil.which", lambda _: "/usr/bin/ffprobe"
+        )
         monkeypatch.setattr(
             "tools.video._shared.subprocess.run",
             lambda *args, **kwargs: subprocess.CompletedProcess(
